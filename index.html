@@ -30,6 +30,7 @@
 
     const $ = (id) => document.getElementById(id);
     let auth, user, currencyCode = '';
+    let userGroups = [];
 
     function fmtAmount(value) {
       const digits = 2;
@@ -55,6 +56,40 @@
         throw new Error(`HTTP ${res.status} ${res.statusText}${txt ? '\n' + txt : ''}`);
       }
       return res.json();
+    }
+
+    async function loadUserGroups() {
+      if (!user) return [];
+      const ug = await fetchRTDB(`userGroups/${user.uid}`);
+      const entries = Object.entries(ug || {}).map(([id, v]) => ({ id, order: (v && typeof v.order === 'number') ? v.order : Number.MAX_SAFE_INTEGER, color: v && v.color || undefined }));
+      const withNames = await Promise.all(entries.map(async (e) => {
+        try {
+          const g = await fetchRTDB(`groups/${e.id}`);
+          return { ...e, name: (g && g.name) ? String(g.name) : e.id };
+        } catch {
+          return { ...e, name: e.id };
+        }
+      }));
+      withNames.sort((a, b) => (a.order - b.order) || String(a.name).localeCompare(String(b.name)));
+      return withNames;
+    }
+
+    function populateGroupSelect(groups) {
+      const sel = $('groupSelect');
+      sel.innerHTML = '';
+      for (const g of groups) {
+        const opt = document.createElement('option');
+        opt.value = g.id;
+        opt.textContent = g.name || g.id;
+        sel.appendChild(opt);
+      }
+      sel.disabled = groups.length === 0 || !user;
+    }
+
+    function updateUrlGroup(groupId) {
+      const url = new URL(window.location.href);
+      if (groupId) url.searchParams.set('group', groupId); else url.searchParams.delete('group');
+      window.history.replaceState({}, '', url);
     }
 
     function aggregate(debts, members) {
@@ -89,7 +124,6 @@
 
     async function refresh() {
       $('error').textContent = '';
-      $('status').textContent = 'Loading…';
       $('tbody').innerHTML = '';
       try {
         const [group, members, debts] = await Promise.all([
@@ -99,7 +133,6 @@
         ]);
 
         currencyCode = group && group.convertedToCurrency ? String(group.convertedToCurrency) : '';
-        $('groupName').textContent = group && group.name ? String(group.name) : GROUP_ID;
 
         const rows = aggregate(debts, members);
 
@@ -119,9 +152,7 @@
         }
 
         $('meta').textContent = `Users: ${rows.length} • Net check: ${fmtAmount(total)} • Updated ${new Date().toLocaleTimeString()}`;
-        $('status').textContent = 'Ready';
       } catch (e) {
-        $('status').textContent = 'Failed';
         $('error').textContent = String(e?.message || e);
       }
     }
@@ -131,6 +162,7 @@
       $('signIn').disabled = !!user;
       $('signOut').disabled = !user;
       $('refresh').disabled = !user;
+      $('groupSelect').disabled = !user || (userGroups.length === 0);
     }
 
     window.addEventListener('DOMContentLoaded', () => {
@@ -138,8 +170,32 @@
       auth = getAuth(app);
       onAuthStateChanged(auth, (u) => {
         user = u;
-        setAuthUi();
-        if (user) refresh();
+        (async () => {
+          if (user) {
+            try {
+              userGroups = await loadUserGroups();
+            } catch (e) {
+              $('error').textContent = 'Failed to load groups: ' + (e?.message || e);
+              userGroups = [];
+            }
+            populateGroupSelect(userGroups);
+
+            const ids = new Set(userGroups.map(g => g.id));
+            if (ids.has(GROUP_ID)) {
+              $('groupSelect').value = GROUP_ID;
+            } else if (userGroups.length > 0) {
+              GROUP_ID = userGroups[0].id;
+              $('groupSelect').value = GROUP_ID;
+              updateUrlGroup(GROUP_ID);
+            }
+            setAuthUi();
+            await refresh();
+          } else {
+            userGroups = [];
+            populateGroupSelect(userGroups);
+            setAuthUi();
+          }
+        })();
       });
 
       $('signIn').addEventListener('click', async () => {
@@ -153,13 +209,25 @@
         try { await signOut(auth); } catch (e) { $('error').textContent = 'Sign-out error: ' + e.message; }
       });
       $('refresh').addEventListener('click', refresh);
+      $('groupSelect').addEventListener('change', () => {
+        const gid = $('groupSelect').value;
+        if (!gid || gid === GROUP_ID) return;
+        GROUP_ID = gid;
+        updateUrlGroup(GROUP_ID);
+        refresh();
+      });
     });
   </script>
 </head>
 <body>
   <header class="container">
     <h1>Ó běda!</h1>
-    <p>Group: <strong id="groupName">-</strong> • <small id="status">Idle</small></p>
+    <fieldset role="group">
+      <button type="button" disabled>Group</button>
+      <select id="groupSelect" aria-label="Select group" disabled>
+        <option value="" selected>Sign in to load groups…</option>
+      </select>
+    </fieldset>
     <nav>
       <ul>
         <li><button id="signIn">Sign in with Google</button></li>
