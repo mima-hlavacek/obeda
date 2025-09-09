@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ó běda!</title>
+  <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" />
+  <style>
+    .pos { color: #2e7d32; }
+    .neg { color: #c62828; }
+    #error { white-space: pre-wrap; }
+  </style>
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js';
+    import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js';
+
+    const FIREBASE_CONFIG = {
+      apiKey: '$SETTLEUP_API_KEY',
+      authDomain: 'settle-up-live.firebaseapp.com',
+      projectId: 'settle-up-live'
+    };
+    const RTDB_BASE = 'https://settle-up-live.firebaseio.com';
+    let GROUP_ID = '-LtdrPcCEM-OCaeboJod';
+
+    {
+      const qp = new URLSearchParams(window.location.search);
+      const g = qp.get('group');
+      if (g) GROUP_ID = g;
+    }
+
+    const $ = (id) => document.getElementById(id);
+    let auth, user, currencyCode = '';
+
+    function fmtAmount(value) {
+      const digits = 2;
+      try {
+        return new Intl.NumberFormat(undefined, { style: currencyCode ? 'currency' : 'decimal', currency: currencyCode || undefined, maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value);
+      } catch (_) {
+        return (currencyCode ? currencyCode + ' ' : '') + value.toFixed(digits);
+      }
+    }
+
+    async function getIdToken() {
+      if (!auth || !auth.currentUser) return null;
+      try { return await auth.currentUser.getIdToken(false); } catch { return null; }
+    }
+
+    async function fetchRTDB(path) {
+      const token = await getIdToken();
+      if (!token) throw new Error('Not signed in');
+      const url = `${RTDB_BASE}/${path}.json?auth=${encodeURIComponent(token)}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${res.statusText}${txt ? '\n' + txt : ''}`);
+      }
+      return res.json();
+    }
+
+    function aggregate(debts, members) {
+      const map = new Map(); // id -> balance
+      const nameById = new Map(Object.entries(members || {}).map(([id, m]) => [id, (m && m.name) ? String(m.name) : id]));
+
+      const arr = Array.isArray(debts) ? debts : debts && typeof debts === 'object' ? Object.values(debts) : [];
+      for (const d of arr) {
+        if (!d) continue;
+        const fromId = d.from;
+        const toId = d.to;
+        const amount = Number(d.amount ?? 0) || 0;
+        if (fromId == null || toId == null) continue;
+        const f = String(fromId), t = String(toId);
+        map.set(f, (map.get(f) || 0) - amount);
+        map.set(t, (map.get(t) || 0) + amount);
+      }
+
+      if (members && typeof members === 'object') {
+        for (const id of Object.keys(members)) {
+          if (!map.has(id)) map.set(id, 0);
+        }
+      }
+
+      const rows = [];
+      for (const [id, bal] of map.entries()) {
+        rows.push({ id, name: nameById.get(id) || id, balance: bal });
+      }
+      rows.sort((a, b) => a.balance - b.balance); // most owed first
+      return rows;
+    }
+
+    async function refresh() {
+      $('error').textContent = '';
+      $('status').textContent = 'Loading…';
+      $('tbody').innerHTML = '';
+      try {
+        const [group, members, debts] = await Promise.all([
+          fetchRTDB(`groups/${GROUP_ID}`),
+          fetchRTDB(`members/${GROUP_ID}`),
+          fetchRTDB(`debts/${GROUP_ID}`)
+        ]);
+
+        currencyCode = group && group.convertedToCurrency ? String(group.convertedToCurrency) : '';
+        $('groupName').textContent = group && group.name ? String(group.name) : GROUP_ID;
+
+        const rows = aggregate(debts, members);
+
+        let total = 0;
+        for (const r of rows) total += r.balance;
+
+        for (const r of rows) {
+          const tr = document.createElement('tr');
+          const tdName = document.createElement('td');
+          const tdBal = document.createElement('td');
+          tdName.textContent = r.name;
+          tdBal.textContent = fmtAmount(r.balance);
+          tdBal.className = r.balance < 0 ? 'neg' : (r.balance > 0 ? 'pos' : '');
+          tr.appendChild(tdName);
+          tr.appendChild(tdBal);
+          $('tbody').appendChild(tr);
+        }
+
+        $('meta').textContent = `Users: ${rows.length} • Net check: ${fmtAmount(total)} • Updated ${new Date().toLocaleTimeString()}`;
+        $('status').textContent = 'Ready';
+      } catch (e) {
+        $('status').textContent = 'Failed';
+        $('error').textContent = String(e?.message || e);
+      }
+    }
+
+    function setAuthUi() {
+      $('userEmail').textContent = user ? (user.email || user.uid) : '';
+      $('signIn').disabled = !!user;
+      $('signOut').disabled = !user;
+      $('refresh').disabled = !user;
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const app = initializeApp(FIREBASE_CONFIG);
+      auth = getAuth(app);
+      onAuthStateChanged(auth, (u) => {
+        user = u;
+        setAuthUi();
+        if (user) refresh();
+      });
+
+      $('signIn').addEventListener('click', async () => {
+        try {
+          await signInWithPopup(auth, new GoogleAuthProvider());
+        } catch (e) {
+          $('error').textContent = 'Sign-in failed: ' + e.message;
+        }
+      });
+      $('signOut').addEventListener('click', async () => {
+        try { await signOut(auth); } catch (e) { $('error').textContent = 'Sign-out error: ' + e.message; }
+      });
+      $('refresh').addEventListener('click', refresh);
+    });
+  </script>
+</head>
+<body>
+  <header class="container">
+    <h1>Ó běda!</h1>
+    <p>Group: <strong id="groupName">-</strong> • <small id="status">Idle</small></p>
+    <nav>
+      <ul>
+        <li><button id="signIn">Sign in with Google</button></li>
+        <li><button id="signOut" class="secondary" disabled>Sign out</button></li>
+        <li><button id="refresh" class="contrast" disabled>Refresh</button></li>
+      </ul>
+    </nav>
+    <p>User: <strong id="userEmail"></strong></p>
+    <p id="error" role="alert"></p>
+  </header>
+
+  <main class="container">
+    <p id="meta"></p>
+    <table role="table">
+      <thead>
+        <tr>
+          <th scope="col">Member</th>
+          <th scope="col">Net balance</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </main>
+</body>
+</html>

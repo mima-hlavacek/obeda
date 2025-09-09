@@ -1,0 +1,50 @@
+name: Deploy substituted index to Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Required permissions for GitHub Pages deployment
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install envsubst (gettext-base)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gettext-base
+
+      - name: Substitute variables in index.html
+        env:
+          SETTLEUP_API_KEY: ${{ secrets.SETTLEUP_API_KEY }}
+        run: |
+          mkdir -p _site
+          envsubst '${SETTLEUP_API_KEY}' < index.html > _site/index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
