@@ -5,14 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ó běda!</title>
   <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" />
+  <link type="text/css" rel="stylesheet" href="https://www.gstatic.com/firebasejs/ui/6.1.0/firebase-ui-auth.css" />
   <style>
     .pos { color: #2e7d32; }
     .neg { color: #c62828; }
     #error { white-space: pre-wrap; }
   </style>
-  <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js';
-    import { getAuth, GoogleAuthProvider, FacebookAuthProvider, OAuthProvider, signInWithPopup, onAuthStateChanged, signOut, signInWithEmailAndPassword } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js';
+  <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.2.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/ui/6.1.0/firebase-ui-auth.js"></script>
+  <script>
 
     const FIREBASE_CONFIG = {
       apiKey: '$SETTLEUP_API_KEY',
@@ -159,28 +161,35 @@
 
     function setAuthUi() {
       $('userEmail').textContent = user ? (user.email || user.uid) : '';
-      if ($('signIn')) $('signIn').disabled = !!user; // Google (legacy id)
-      if ($('signInFacebook')) $('signInFacebook').disabled = !!user;
-      if ($('signInApple')) $('signInApple').disabled = !!user;
-      if ($('openEmailModal')) $('openEmailModal').disabled = !!user;
-      if ($('signInEmail')) $('signInEmail').disabled = !!user;
-      if ($('email')) $('email').disabled = !!user;
-      if ($('password')) $('password').disabled = !!user;
+      if ($('openAuthModal')) $('openAuthModal').disabled = !!user;
       $('signOut').disabled = !user;
       $('refresh').disabled = !user;
       $('groupSelect').disabled = !user || (userGroups.length === 0);
-      if (user && $('emailDialog')?.open) {
-        try { $('emailDialog').close(); } catch {}
-      }
     }
 
     window.addEventListener('DOMContentLoaded', () => {
-      const app = initializeApp(FIREBASE_CONFIG);
-      auth = getAuth(app);
-      onAuthStateChanged(auth, (u) => {
+      const app = firebase.initializeApp(FIREBASE_CONFIG);
+      auth = firebase.auth(app);
+
+      const uiConfig = {
+        signInFlow: 'popup',
+        signInOptions: [
+          'google.com',
+          'facebook.com',
+          'apple.com',
+          'password',
+        ],
+        callbacks: {
+          signInSuccessWithAuthResult: () => false
+        }
+      };
+
+      const ui = firebaseui.auth.AuthUI.getInstance() || new firebaseui.auth.AuthUI(auth);
+      auth.onAuthStateChanged((u) => {
         user = u;
         (async () => {
           if (user) {
+            if ($('authDialog')?.open) { try { $('authDialog').close(); } catch {} }
             try {
               userGroups = await loadUserGroups();
             } catch (e) {
@@ -206,67 +215,14 @@
           }
         })();
       });
-
-      $('signIn').addEventListener('click', async () => {
-        try {
-          await signInWithPopup(auth, new GoogleAuthProvider());
-        } catch (e) {
-          $('error').textContent = 'Sign-in failed: ' + e.message;
-        }
-      });
-      if ($('signInFacebook')) {
-        $('signInFacebook').addEventListener('click', async () => {
-          try {
-            await signInWithPopup(auth, new FacebookAuthProvider());
-          } catch (e) {
-            $('error').textContent = 'Facebook sign-in failed: ' + (e?.message || e);
-          }
-        });
-      }
-      if ($('signInApple')) {
-        $('signInApple').addEventListener('click', async () => {
-          try {
-            const provider = new OAuthProvider('apple.com');
-            await signInWithPopup(auth, provider);
-          } catch (e) {
-            $('error').textContent = 'Apple sign-in failed: ' + (e?.message || e);
-          }
-        });
-      }
-      if ($('signInEmail')) {
-        $('signInEmail').addEventListener('click', async () => {
-          try { if ($('emailDialog')?.open) $('emailDialog').close(); } catch {}
-          const email = ($('email')?.value || '').trim();
-          const password = $('password')?.value || '';
-          if (!email || !password) {
-            $('error').textContent = 'Enter email and password.';
-            return;
-          }
-          try {
-            await signInWithEmailAndPassword(auth, email, password);
-          } catch (e) {
-            $('error').textContent = 'Email sign-in failed: ' + (e?.message || e);
-          }
-        });
-      }
-      if ($('emailAuth')) {
-        $('emailAuth').addEventListener('submit', (ev) => {
-          ev.preventDefault();
-          $('signInEmail')?.click();
-        });
-      }
-      if ($('openEmailModal')) {
-        $('openEmailModal').addEventListener('click', () => {
-          try { $('emailDialog').showModal(); $('email')?.focus(); } catch {}
-        });
-      }
-      if ($('emailCancel')) {
-        $('emailCancel').addEventListener('click', () => {
-          try { $('emailDialog').close(); } catch {}
+      if ($('openAuthModal')) {
+        $('openAuthModal').addEventListener('click', () => {
+          try { $('authDialog').showModal(); } catch {}
+          ui.start('#firebaseui-auth-container', uiConfig);
         });
       }
       $('signOut').addEventListener('click', async () => {
-        try { await signOut(auth); } catch (e) { $('error').textContent = 'Sign-out error: ' + e.message; }
+        try { await auth.signOut(); } catch (e) { $('error').textContent = 'Sign-out error: ' + e.message; }
       });
       $('refresh').addEventListener('click', refresh);
       $('groupSelect').addEventListener('change', () => {
@@ -290,32 +246,18 @@
     </fieldset>
     <nav>
       <ul>
-        <li><button id="signIn">Sign in with Google</button></li>
-        <li><button id="signInFacebook" class="secondary">Facebook</button></li>
-        <li><button id="signInApple" class="secondary">Sign in with Apple</button></li>
-        <li><button id="openEmailModal" class="secondary">Email sign-in</button></li>
+        <li><button id="openAuthModal">Sign in</button></li>
         <li><button id="signOut" class="secondary" disabled>Sign out</button></li>
         <li><button id="refresh" class="contrast" disabled>Refresh</button></li>
       </ul>
     </nav>
-    <dialog id="emailDialog">
+    <dialog id="authDialog">
       <article>
         <header>
           <a href="#close" aria-label="Close" class="close"></a>
-          <h3>Email sign-in</h3>
+          <h3>Sign in</h3>
         </header>
-        <form id="emailAuth">
-          <fieldset>
-            <label for="email">Email</label>
-            <input id="email" type="email" placeholder="you@example.com" autocomplete="username" required />
-            <label for="password">Password</label>
-            <input id="password" type="password" placeholder="••••••••" autocomplete="current-password" required />
-          </fieldset>
-          <footer>
-            <button id="emailCancel" class="secondary" type="button">Cancel</button>
-            <button id="signInEmail" type="submit" class="contrast">Sign in</button>
-          </footer>
-        </form>
+        <div id="firebaseui-auth-container"></div>
       </article>
     </dialog>
     <p>User: <strong id="userEmail"></strong></p>
