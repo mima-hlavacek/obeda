@@ -12,7 +12,7 @@
   </style>
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-app.js';
-    import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js';
+    import { getAuth, GoogleAuthProvider, FacebookAuthProvider, OAuthProvider, signInWithPopup, onAuthStateChanged, signOut, signInWithEmailAndPassword } from 'https://www.gstatic.com/firebasejs/12.2.1/firebase-auth.js';
 
     const FIREBASE_CONFIG = {
       apiKey: '$SETTLEUP_API_KEY',
@@ -159,10 +159,19 @@
 
     function setAuthUi() {
       $('userEmail').textContent = user ? (user.email || user.uid) : '';
-      $('signIn').disabled = !!user;
+      if ($('signIn')) $('signIn').disabled = !!user; // Google (legacy id)
+      if ($('signInFacebook')) $('signInFacebook').disabled = !!user;
+      if ($('signInApple')) $('signInApple').disabled = !!user;
+      if ($('openEmailModal')) $('openEmailModal').disabled = !!user;
+      if ($('signInEmail')) $('signInEmail').disabled = !!user;
+      if ($('email')) $('email').disabled = !!user;
+      if ($('password')) $('password').disabled = !!user;
       $('signOut').disabled = !user;
       $('refresh').disabled = !user;
       $('groupSelect').disabled = !user || (userGroups.length === 0);
+      if (user && $('emailDialog')?.open) {
+        try { $('emailDialog').close(); } catch {}
+      }
     }
 
     window.addEventListener('DOMContentLoaded', () => {
@@ -205,6 +214,57 @@
           $('error').textContent = 'Sign-in failed: ' + e.message;
         }
       });
+      if ($('signInFacebook')) {
+        $('signInFacebook').addEventListener('click', async () => {
+          try {
+            await signInWithPopup(auth, new FacebookAuthProvider());
+          } catch (e) {
+            $('error').textContent = 'Facebook sign-in failed: ' + (e?.message || e);
+          }
+        });
+      }
+      if ($('signInApple')) {
+        $('signInApple').addEventListener('click', async () => {
+          try {
+            const provider = new OAuthProvider('apple.com');
+            await signInWithPopup(auth, provider);
+          } catch (e) {
+            $('error').textContent = 'Apple sign-in failed: ' + (e?.message || e);
+          }
+        });
+      }
+      if ($('signInEmail')) {
+        $('signInEmail').addEventListener('click', async () => {
+          try { if ($('emailDialog')?.open) $('emailDialog').close(); } catch {}
+          const email = ($('email')?.value || '').trim();
+          const password = $('password')?.value || '';
+          if (!email || !password) {
+            $('error').textContent = 'Enter email and password.';
+            return;
+          }
+          try {
+            await signInWithEmailAndPassword(auth, email, password);
+          } catch (e) {
+            $('error').textContent = 'Email sign-in failed: ' + (e?.message || e);
+          }
+        });
+      }
+      if ($('emailAuth')) {
+        $('emailAuth').addEventListener('submit', (ev) => {
+          ev.preventDefault();
+          $('signInEmail')?.click();
+        });
+      }
+      if ($('openEmailModal')) {
+        $('openEmailModal').addEventListener('click', () => {
+          try { $('emailDialog').showModal(); $('email')?.focus(); } catch {}
+        });
+      }
+      if ($('emailCancel')) {
+        $('emailCancel').addEventListener('click', () => {
+          try { $('emailDialog').close(); } catch {}
+        });
+      }
       $('signOut').addEventListener('click', async () => {
         try { await signOut(auth); } catch (e) { $('error').textContent = 'Sign-out error: ' + e.message; }
       });
@@ -231,10 +291,33 @@
     <nav>
       <ul>
         <li><button id="signIn">Sign in with Google</button></li>
+        <li><button id="signInFacebook" class="secondary">Facebook</button></li>
+        <li><button id="signInApple" class="secondary">Sign in with Apple</button></li>
+        <li><button id="openEmailModal" class="secondary">Email sign-in</button></li>
         <li><button id="signOut" class="secondary" disabled>Sign out</button></li>
         <li><button id="refresh" class="contrast" disabled>Refresh</button></li>
       </ul>
     </nav>
+    <dialog id="emailDialog">
+      <article>
+        <header>
+          <a href="#close" aria-label="Close" class="close"></a>
+          <h3>Email sign-in</h3>
+        </header>
+        <form id="emailAuth">
+          <fieldset>
+            <label for="email">Email</label>
+            <input id="email" type="email" placeholder="you@example.com" autocomplete="username" required />
+            <label for="password">Password</label>
+            <input id="password" type="password" placeholder="••••••••" autocomplete="current-password" required />
+          </fieldset>
+          <footer>
+            <button id="emailCancel" class="secondary" type="button">Cancel</button>
+            <button id="signInEmail" type="submit" class="contrast">Sign in</button>
+          </footer>
+        </form>
+      </article>
+    </dialog>
     <p>User: <strong id="userEmail"></strong></p>
     <p id="error" role="alert"></p>
   </header>
