@@ -34,6 +34,7 @@ jobs:
         env:
           SETTLEUP_API_KEY: ${{ secrets.SETTLEUP_API_KEY }}
         run: |
+          test -n "$SETTLEUP_API_KEY" || { echo "::error::SETTLEUP_API_KEY secret is missing"; exit 1; }
           mkdir -p _site
           envsubst '${SETTLEUP_API_KEY}' < index.html > _site/index.html
 

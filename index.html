@@ -31,16 +31,27 @@
     }
 
     const $ = (id) => document.getElementById(id);
+    const FRACTION_DIGITS = 2;
     let auth, user, currencyCode = '';
     let userGroups = [];
+    let refreshSeq = 0;
+
+    /** Rounds to displayed precision so tiny float errors don't show as -0.00. */
+    function roundAmount(value) {
+      const factor = 10 ** FRACTION_DIGITS;
+      return Math.round(value * factor) / factor || 0;
+    }
 
     function fmtAmount(value) {
-      const digits = 2;
       try {
-        return new Intl.NumberFormat(undefined, { style: currencyCode ? 'currency' : 'decimal', currency: currencyCode || undefined, maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value);
+        return new Intl.NumberFormat(undefined, { style: currencyCode ? 'currency' : 'decimal', currency: currencyCode || undefined, maximumFractionDigits: FRACTION_DIGITS, minimumFractionDigits: FRACTION_DIGITS }).format(value);
       } catch (_) {
-        return (currencyCode ? currencyCode + ' ' : '') + value.toFixed(digits);
+        return (currencyCode ? currencyCode + ' ' : '') + value.toFixed(FRACTION_DIGITS);
       }
+    }
+
+    function balanceClass(value) {
+      return value < 0 ? 'neg' : (value > 0 ? 'pos' : '');
     }
 
     async function getIdToken() {
@@ -63,7 +74,7 @@
     async function loadUserGroups() {
       if (!user) return [];
       const ug = await fetchRTDB(`userGroups/${user.uid}`);
-      const entries = Object.entries(ug || {}).map(([id, v]) => ({ id, order: (v && typeof v.order === 'number') ? v.order : Number.MAX_SAFE_INTEGER, color: v && v.color || undefined }));
+      const entries = Object.entries(ug || {}).map(([id, v]) => ({ id, order: (v && typeof v.order === 'number') ? v.order : Number.MAX_SAFE_INTEGER, color: v && v.color || undefined, member: v && v.member || undefined }));
       const withNames = await Promise.all(entries.map(async (e) => {
         try {
           const g = await fetchRTDB(`groups/${e.id}`);
@@ -118,21 +129,35 @@
 
       const rows = [];
       for (const [id, bal] of map.entries()) {
-        rows.push({ id, name: nameById.get(id) || id, balance: bal });
+        const balance = roundAmount(bal);
+        const inactive = members && members[id] && members[id].active === false;
+        if (inactive && balance === 0) continue;
+        rows.push({ id, name: nameById.get(id) || id, balance });
       }
-      rows.sort((a, b) => a.balance - b.balance); // most owed first
+      rows.sort((a, b) => a.balance - b.balance); // largest debtors first
       return rows;
     }
 
+    /** Shows the signed-in user's balance. Stays empty if the user has no linked member in the group. */
+    function renderMyBalance(rows) {
+      const el = $('myBalance');
+      const memberId = userGroups.find(g => g.id === GROUP_ID)?.member;
+      const row = memberId ? rows.find(r => r.id === memberId) : undefined;
+      el.textContent = row ? fmtAmount(row.balance) : '';
+      el.className = row ? balanceClass(row.balance) : '';
+    }
+
+    /** Loads and shows the selected group. Ignores the result if a newer refresh started meanwhile. */
     async function refresh() {
+      const seq = ++refreshSeq;
       $('error').textContent = '';
-      $('tbody').innerHTML = '';
       try {
         const [group, members, debts] = await Promise.all([
           fetchRTDB(`groups/${GROUP_ID}`),
           fetchRTDB(`members/${GROUP_ID}`),
           fetchRTDB(`debts/${GROUP_ID}`)
         ]);
+        if (seq !== refreshSeq) return;
 
         currencyCode = group && group.convertedToCurrency ? String(group.convertedToCurrency) : '';
 
@@ -140,21 +165,28 @@
 
         let total = 0;
         for (const r of rows) total += r.balance;
+        total = roundAmount(total);
 
-        for (const r of rows) {
+        const trs = rows.map((r) => {
           const tr = document.createElement('tr');
           const tdName = document.createElement('td');
           const tdBal = document.createElement('td');
           tdName.textContent = r.name;
           tdBal.textContent = fmtAmount(r.balance);
-          tdBal.className = r.balance < 0 ? 'neg' : (r.balance > 0 ? 'pos' : '');
+          tdBal.className = balanceClass(r.balance);
           tr.appendChild(tdName);
           tr.appendChild(tdBal);
-          $('tbody').appendChild(tr);
-        }
+          return tr;
+        });
+        $('tbody').replaceChildren(...trs);
+        renderMyBalance(rows);
 
         $('meta').textContent = `Users: ${rows.length} • Net check: ${fmtAmount(total)} • Updated ${new Date().toLocaleTimeString()}`;
       } catch (e) {
+        if (seq !== refreshSeq) return;
+        $('tbody').replaceChildren();
+        $('meta').textContent = '';
+        renderMyBalance([]);
         $('error').textContent = String(e?.message || e);
       }
     }
@@ -193,8 +225,11 @@
             try {
               userGroups = await loadUserGroups();
             } catch (e) {
-              $('error').textContent = 'Failed to load groups: ' + (e?.message || e);
               userGroups = [];
+              populateGroupSelect(userGroups);
+              setAuthUi();
+              $('error').textContent = 'Failed to load groups: ' + (e?.message || e);
+              return;
             }
             populateGroupSelect(userGroups);
 
@@ -221,6 +256,10 @@
           ui.start('#firebaseui-auth-container', uiConfig);
         });
       }
+      $('authDialog').querySelector('.close').addEventListener('click', (e) => {
+        e.preventDefault();
+        $('authDialog').close();
+      });
       $('signOut').addEventListener('click', async () => {
         try { await auth.signOut(); } catch (e) { $('error').textContent = 'Sign-out error: ' + e.message; }
       });
@@ -260,7 +299,7 @@
         <div id="firebaseui-auth-container"></div>
       </article>
     </dialog>
-    <p>User: <strong id="userEmail"></strong></p>
+    <p>User: <strong id="userEmail"></strong> <strong id="myBalance"></strong></p>
     <p id="error" role="alert"></p>
   </header>
 
